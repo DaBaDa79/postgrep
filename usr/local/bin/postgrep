@@ -1,8 +1,4 @@
 #!/bin/bash
-#
-# (C) Copyright 2013, 2014 iT-NetService GmbH
-#
-
 PATH=$PATH:/sbin:/usr/sbin:/usr/local/sbin
 if [ "$UID" == "0" ]; then
     DEBUG=true
