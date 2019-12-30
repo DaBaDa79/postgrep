@@ -29,7 +29,7 @@ fi
 
 if [ "$1" == "" ]; then
 	echo
-	echo "postgrep - 'exigrep für postfix' - (C) iT-NetService GmbH"
+	echo "postgrep - 'exigrep für postfix'"
 	echo 
 	echo "Aufruf: $0 <Suchbegriff> [logfile] [--amavis]"
 	echo
