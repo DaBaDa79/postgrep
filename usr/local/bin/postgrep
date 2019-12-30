@@ -1,0 +1,151 @@
+#!/bin/bash
+#
+# (C) Copyright 2013, 2014 iT-NetService GmbH
+#
+
+PATH=$PATH:/sbin:/usr/sbin:/usr/local/sbin
+if [ "$UID" == "0" ]; then
+    DEBUG=true
+else
+    DEBUG=false
+fi
+
+# Wenn kein Logfile übergeben wird, dann das "normale" verwenden
+if [ "$2" != "" -a "$2" != "-" -a "$2" != "--amavis" ]; then
+    LOGFILE=$2
+else
+    if [ "$2" != "-" ]; then
+	LOGFILE=/var/log/mail.log
+    else
+	LOGFILE=""
+fi
+fi
+if [ "$2" == "--amavis" -o "$3" == "--amavis" ]; then
+    SCAN_AMAVIS=true
+else
+    SCAN_AMAVIS=false
+fi
+
+if [ ! -f $LOGFILE ]; then
+    echo "Datei \"$LOGFILE\" nicht gefunden !" 1>&2
+    exit 2
+fi
+
+if [ "$1" == "" ]; then
+	echo
+	echo "postgrep - 'exigrep für postfix' - (C) iT-NetService GmbH"
+	echo 
+	echo "Aufruf: $0 <Suchbegriff> [logfile] [--amavis]"
+	echo
+	echo "  Suchbegriff     - wonach gesucht werden soll"
+	echo "  logfile         - postfix logfile - wenn nicht angegeben, dann wird"
+	echo "                    $LOGFILE verwendet. Es kann auch '-' angegeben werden,"
+	echo "                    um das logfile von der Standardeingabe zu lesen."
+	echo "  --amavis        - auch die amavis-Logeinträge durchsuchen (sehr umfangreich)"
+	echo
+	exit 0
+fi
+
+TEMPDIR=/tmp/postgrep2
+
+#Sicher ist sicher!
+if [ "${TEMPDIR:0:5}" == "/tmp/" ]; then
+    rm -rf $TEMPDIR
+    mkdir -p $TEMPDIR
+else
+    echo "Tempordner nicht unterhalb von /tmp/ !" 1>&2
+    exit 1
+fi
+
+TEMPFILE=$TEMPDIR/logfile
+
+if ( $DEBUG ); then echo -n "Logdaten zusammensuchen..." 1>&2 ; fi
+zcat -f $LOGFILE > $TEMPFILE || sh -c "rm $TEMPFILE; ln -s $LOGFILE $TEMPFILE"
+if ( $DEBUG ); then echo "$(du -hs --apparent-size $TEMPFILE | cut -f1)" 1>&2 ; fi
+
+# Suchbegriff suchen und MailIDs filtern
+if ( $DEBUG ); then echo -n "Suche nach Haupt-IDs..." 1>&2 ; fi
+ids1=$(grep -i $1 $TEMPFILE| awk '{print $6}' | grep ':' | grep -v -E "(NOQUEUE|warning|imap|lda|pop3|auth)" | cut -d':' -f1 | sort -u)
+searchpattern1="$(echo -e "$ids1")"
+##echo $ids1 1>&2
+if ( $DEBUG ); then echo "$(echo $ids1 | wc -w) IDs" 1>&2 ; fi
+
+# Statusmail-IDs suchen
+if ( $DEBUG ); then echo -n "Suche nach Statusmail-IDs..." 1>&2 ; fi
+ids2=
+if [ "$searchpattern1" != "" ]; then
+    ids2=$(grep -F "$searchpattern1" $TEMPFILE| grep "sender delivery status notification:" | awk '{print $11}' | sort -u)
+fi
+##echo $ids2 1>&2
+if ( $DEBUG ); then echo "$(echo $ids2 | wc -w) IDs" 1>&2 ; fi
+
+# Queue-ID suchen
+if ( $DEBUG ); then echo -n "Suche nach Queue-IDs..." 1>&2 ; fi
+ids3=
+if [ "$searchpattern1" != "" ]; then
+    hit=false
+    for arg in $(grep -F "$searchpattern1" $TEMPFILE| grep "queued_as:"); do
+	if [ $hit == true ]; then
+		hit=false
+		ids3=$(echo -e "$ids3\n$(echo $arg | cut -d',' -f1)")
+	elif [ "$arg" = "queued_as:" ]; then
+		hit=true
+	fi
+    done
+fi
+#echo $ids3
+if ( $DEBUG ); then echo "$(echo $ids3 | wc -w) IDs" 1>&2 ; fi
+
+# Cleanup-IDs suchen
+if ( $DEBUG ); then echo -n "Suche nach Cleanup-IDs..." 1>&2 ; fi
+ids4=
+if [ "$searchpattern1" != "" ]; then
+    ids4=$(grep -F "$searchpattern1" $TEMPFILE| grep "message-id=<" | awk '{print $7}' | cut -d'<' -f2 | cut -d'>' -f1 | sort -u)
+fi
+##echo $ids4 1>&2
+if ( $DEBUG ); then echo "$(echo $ids4 | wc -w) IDs" 1>&2 ; fi
+
+# Amavis-IDs suchen, falls angefordert
+ids5=
+if ( $SCAN_AMAVIS ); then
+    if ( $DEBUG ); then echo -n "Suche nach Amavis-IDs..." 1>&2 ; fi
+    if [ "$searchpattern1" != "" ]; then
+	ids5=$(grep -F "$searchpattern1" $TEMPFILE | grep 'amavis' | awk '{print $6}' | sort -u)
+    fi
+    ##echo $ids5 1>&2
+    if ( $DEBUG ); then echo "$(echo $ids5 | wc -w) IDs" 1>&2 ; fi
+fi
+
+if ( $DEBUG ); then echo -n "IDs zusammenführen..." 1>&2 ; fi
+ids=
+for id in $(echo $ids1 $ids2 $ids3 $ids4 $ids5); do
+    if [ "$id" != "" ]; then
+	ids=$(echo -e "$ids\n$id")
+    fi
+done
+##echo $ids
+searchpattern2="$(echo -e "$ids" | sort -u | tail -n+2 )"
+if ( $DEBUG ); then 
+    echo "$(echo "$searchpattern2" | wc -w) IDs gesamt" 1>&2
+    ##echo -e "[$searchpattern2]" 1>&2
+    ##exit
+fi
+
+if [ "$searchpattern2" != "" ]; then
+    if ( $DEBUG ); then echo "Auswertung..." 1>&2 ; fi
+    firstline=true
+    grep -F "$searchpattern2" $TEMPFILE |
+    while read line; do
+	if [ $firstline != true ]; then
+		echo $line | grep "client=" | grep -q -v "127.0.0.1" && echo
+	else
+		firstline=false
+	fi
+	echo $line
+    done
+else
+    if ( $DEBUG ); then echo "Keine IDs zum Suchen vorhanden." 1>&2 ; fi
+fi
+
+rm $TEMPFILE
+rmdir $TEMPDIR
