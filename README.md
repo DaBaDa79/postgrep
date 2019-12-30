@@ -1,2 +1,2 @@
 # postgrep
-postfix log parser
+postfix log parser for debian linux
